@@ -1025,14 +1025,83 @@ function readHash(){ var m=/^(home|month|savvy|plan)(?:-(\d{4}-\d{2}))?$/.exec((
 function writeHash(){ var h="#"+ui.view+"-"+ui.month; if(location.hash!==h) history.replaceState(null,"",h); }
 window.addEventListener("hashchange", function(){ readHash(); ui.animate=true; render(); });
 /* keep in step with the classic view if it is open in another tab */
-window.addEventListener("storage", function(e){ if(e.key===KEY){ state=load(); render(); } });
+window.addEventListener("storage", function(e){ if(e.key===KEY){ var n=load(); if(stamp(n)>stamp(state)){ state=n; soft(); } } });
 
 function save(msg){
-  state.savedAt=new Date().toISOString(); var ok=true;
+  state.savedAt=new Date().toISOString(); state.updated=Date.now(); var ok=true;
   try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){ ok=false; }
-  document.getElementById("saved").innerHTML = ok ? '<i></i><span>Saved '+new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})+'</span>' : '<i style="background:var(--red)"></i><span>Not saved: use Export backup</span>';
+  if(ok) paintSaved(); else document.getElementById("saved").innerHTML='<i style="background:var(--red)"></i><span>Not saved: use Export backup</span>';
+  schedulePush();
   if(msg) toast(msg);
 }
+/* ================= sync between devices ================= */
+function stamp(s){ return (s && (+s.updated || Date.parse(s.savedAt||"") || 0)) || 0; }
+var SY={mode:"device",err:"",ref:null,writing:false,dirty:false,pend:false,gid:null,ptimer:null};
+function syncTxt(){ return SY.err?SY.err:SY.mode==="db"?"Synced to your Claude account":SY.mode==="gh"?"Synced via GitHub":"Saved on this device only"; }
+function paintSaved(){ var el=document.getElementById("saved"); if(!el) return; var c=SY.err?"var(--amber)":SY.mode==="device"?"var(--faint)":"var(--green)"; el.innerHTML='<i style="background:'+c+'"></i><span>'+esc(syncTxt())+'</span>'; el.title=syncTxt(); }
+function schedulePush(){ clearTimeout(SY.ptimer); if(SY.mode==="db"||SY.mode==="gh") SY.ptimer=setTimeout(push,1200); }
+function push(){
+  if(SY.writing){ SY.dirty=true; return; }
+  SY.writing=true; SY.dirty=false; var body=JSON.parse(JSON.stringify(state));
+  var pr=SY.mode==="db"?SY.ref.set(body):SY.mode==="gh"?ghPatch(body):Promise.resolve();
+  pr.then(function(){ SY.err=""; paintSaved(); },function(){ SY.err="Sync failed — saved on this device"; paintSaved(); }).then(function(){ SY.writing=false; if(SY.dirty) push(); });
+}
+function editing(){ var a=document.activeElement; return a && (a.tagName==="TEXTAREA" || (a.tagName==="INPUT" && a.type!=="checkbox" && a.type!=="date" && a.type!=="file")) || !!document.querySelector(".scrim"); }
+function adopt(r){
+  if(!r || !r.plan || !r.months) return false;
+  if(stamp(r)<=stamp(state)) return false;
+  state=Savvy.ensure(syncFx(migrate(JSON.parse(JSON.stringify(r)))));
+  try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
+  if(editing()) SY.pend=true; else soft();
+  return true;
+}
+document.addEventListener("focusout",function(){ if(SY.pend){ setTimeout(function(){ if(SY.pend && !editing()){ SY.pend=false; soft(); } },60); } });
+/* claude.ai link: private store in your Claude account */
+try{ if(window.claude && claude.use){ Promise.all([claude.use("db"),claude.use("user")]).then(function(r){ var db=r[0],u=r[1]; if(!db||!u) return; return u.id().then(function(id){ if(!id) return;
+  SY.ref=db.doc("data/users/"+id+"/savingsPlan"); SY.mode="db"; SY.err=""; paintSaved(); var first=true;
+  SY.ref.onSnapshot(function(snap){
+    if(snap.metadata && snap.metadata.hasPendingWrites) return;
+    if(snap.exists) adopt(snap.data());
+    if(first && !(snap.metadata && snap.metadata.fromCache)){ first=false; var rr=snap.exists?snap.data():null; if(!rr || stamp(state)>stamp(rr)){ if(stamp(state)) push(); } }
+  },function(){ SY.err="Sync paused — saved on this device"; paintSaved(); });
+}); }).catch(function(){}); } }catch(e){}
+/* GitHub Pages copy: private gist */
+var GHF="savings-plan-sync.json";
+function ghTok(){ try{ return localStorage.getItem("savingsPlan.gh")||""; }catch(e){ return ""; } }
+function ghH(){ return {"Authorization":"Bearer "+ghTok(),"Accept":"application/vnd.github+json"}; }
+function ghFind(){
+  var gid=""; try{ gid=localStorage.getItem("savingsPlan.gid")||""; }catch(e){} if(gid) return Promise.resolve(gid);
+  return fetch("https://api.github.com/gists?per_page=100",{headers:ghH(),cache:"no-store"}).then(function(r){ if(!r.ok) throw new Error(r.status===401?"bad token":"github "+r.status); return r.json(); }).then(function(list){
+    var g=list.filter(function(x){ return x.files && x.files[GHF]; })[0]; if(g) return g.id;
+    var f={}; f[GHF]={content:JSON.stringify(state)};
+    return fetch("https://api.github.com/gists",{method:"POST",headers:ghH(),body:JSON.stringify({description:"Savings Plan sync (private)",public:false,files:f})}).then(function(r){ if(!r.ok) throw new Error("create "+r.status); return r.json(); }).then(function(j){ return j.id; });
+  }).then(function(id){ try{ localStorage.setItem("savingsPlan.gid",id); }catch(e){} return id; });
+}
+function ghPull(){ return fetch("https://api.github.com/gists/"+SY.gid,{headers:ghH(),cache:"no-store"}).then(function(r){ if(!r.ok) throw new Error("pull "+r.status); return r.json(); }).then(function(j){ var f=j.files && j.files[GHF]; if(!f) return null; if(f.truncated) return fetch(f.raw_url,{cache:"no-store"}).then(function(r){ return r.json(); }); return JSON.parse(f.content||"{}"); }); }
+function ghPatch(body){ var f={}; f[GHF]={content:JSON.stringify(body)}; return fetch("https://api.github.com/gists/"+SY.gid,{method:"PATCH",headers:ghH(),body:JSON.stringify({files:f})}).then(function(r){ if(!r.ok) throw new Error("push "+r.status); }); }
+function ghStart(){
+  if(!ghTok() || SY.mode==="db") return Promise.resolve();
+  return ghFind().then(function(id){ SY.gid=id; SY.mode="gh"; SY.err=""; return ghPull(); }).then(function(r){ if(!adopt(r) && stamp(state)>stamp(r)) push(); paintSaved(); if(ui.view==="plan") soft(); })
+    .catch(function(e){ SY.err=String(e.message)==="bad token"?"GitHub token not accepted":"GitHub sync couldn’t connect"; paintSaved(); if(ui.view==="plan") soft(); });
+}
+function pullNow(){ if(SY.mode==="db" && SY.ref) return SY.ref.get().then(function(sn){ if(sn.exists) adopt(sn.data()); }); if(SY.mode==="gh") return ghPull().then(adopt); return Promise.resolve(); }
+document.addEventListener("visibilitychange",function(){ if(document.visibilityState==="visible") pullNow().catch(function(){}); });
+setInterval(function(){ if(SY.mode==="gh" && document.visibilityState==="visible" && !SY.writing) pullNow().catch(function(){}); },30000);
+setTimeout(ghStart,0);
+function syncCard(){
+  var badge=SY.err?'<span class="chip st-near"><i></i>Check</span>':SY.mode==="device"?'<span class="chip st-up"><i></i>Off</span>':'<span class="chip st-on"><i></i>On</span>';
+  var o='<div class="glass"><div class="row" style="justify-content:space-between;align-items:flex-start"><div><h2>Sync between phone and computer</h2><div class="sub">'+esc(syncTxt())+'</div></div>'+badge+'</div>';
+  if(SY.mode==="db") return o+'<div class="sub" style="margin-top:12px;line-height:1.55">Your bills, actuals, notes and Savvy Tech payments save to your Claude account. Open this same claude.ai link on your phone and computer while signed in, and changes show up within a few seconds.</div><button class="btn sm" data-act="pull" style="margin-top:12px">↻ Pull latest now</button></div>';
+  var on=!!ghTok();
+  o+='<div class="sub" style="margin-top:12px;line-height:1.55">For your <b>GitHub Pages copy</b>, connect a private GitHub Gist, a hidden note in your own GitHub account. Do this once on each device:</div>'+
+    '<ol class="sub" style="padding-left:18px;line-height:1.6;margin:8px 0 12px"><li>On github.com go to <b>Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token</b>.</li><li>Under <b>Account permissions</b>, set <b>Gists</b> to <b>Read and write</b>. Leave everything else off.</li><li>Copy the token, paste it below on your phone <i>and</i> your computer, then tap Connect.</li></ol>'+
+    '<div class="sub" style="margin:-4px 0 12px">Already using a token for the Fit Plan? The same token works here.</div>'+
+    (on?'<div class="row" style="flex-wrap:wrap"><span class="chip st-on"><i></i>Token saved on this device</span><button class="btn sm" data-act="pull">↻ Pull latest</button><button class="btn sm danger" data-act="ghoff">Disconnect</button></div>'
+       :'<div class="row"><input class="inp" type="text" id="ghtok" placeholder="Paste GitHub token" autocomplete="off" style="flex:1"><button class="btn sm pri" data-act="ghconnect">Connect</button></div>')+
+    '<div class="sub" style="margin-top:10px">The token stays in this browser only and can do nothing except read and write your gists. If two devices change things while offline, the most recent save wins.</div></div>';
+  return o;
+}
+
 function cssv(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 function m2(n){ return money(n, Math.round(n)!==n); }
 function toast(t){ var el=document.getElementById("toast"); el.textContent=t; el.classList.add("show"); clearTimeout(toast._t); toast._t=setTimeout(function(){ el.classList.remove("show"); },2000); }
@@ -1265,7 +1334,8 @@ function viewPlan(){
         '<label class="full">Intern payment every 3 months (EC$)<input class="inp num" inputmode="decimal" data-plan="internQuarterly" value="'+state.plan.internQuarterly+'"></label>'+
         Object.keys(state.plan.rates).map(function(c){ return '<label>1 '+c+' in EC$<input class="inp num" inputmode="decimal" data-rate="'+c+'" value="'+state.plan.rates[c]+'"></label>'; }).join("")+
       '</div>'+(planKind("savings")*12!==+state.plan.savingsGoal?'<div class="banner info">At '+money(planKind("savings"))+'/month you will save '+money(planKind("savings")*12)+'.</div>':'')+'</div>'+
-      '<div class="glass"><h2>Your data</h2><div class="sub">Saved in this browser. Export a backup now and then to keep a copy.</div><div class="row" style="flex-wrap:wrap;margin-top:14px"><button class="btn sm" data-act="export">Export backup</button><button class="btn sm" data-act="import">Import</button><button class="btn sm danger" data-act="reset">Reset</button></div><div class="sub" style="margin-top:10px">'+(state.savedAt?"Last saved "+new Date(state.savedAt).toLocaleString("en-US",{dateStyle:"medium",timeStyle:"short"}):"Nothing saved yet")+'</div>'+'</div>'+
+      '<div class="glass"><h2>Your data</h2><div class="sub">Saved in this browser and synced (see below). Export a backup now and then to keep a copy.</div><div class="row" style="flex-wrap:wrap;margin-top:14px"><button class="btn sm" data-act="export">Export backup</button><button class="btn sm" data-act="import">Import</button><button class="btn sm danger" data-act="reset">Reset</button></div><div class="sub" style="margin-top:10px">'+(state.savedAt?"Last saved "+new Date(state.savedAt).toLocaleString("en-US",{dateStyle:"medium",timeStyle:"short"}):"Nothing saved yet")+'</div>'+
+        '</div>'+syncCard()+
     '</section></div>';
 }
 
@@ -1357,6 +1427,9 @@ document.addEventListener("click",function(ev){
   if(t.dataset.add || t.id==="fab"){ sheet(null); return; }
   if(t.id==="themeBtn"){ var nt=document.documentElement.getAttribute("data-theme")==="light"?"dark":"light"; document.documentElement.setAttribute("data-theme",nt); try{ localStorage.setItem(THEME_KEY,nt); }catch(e){} ui.animate=false; render(); return; }
   if(t.dataset.act==="export"){ var blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"}), a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="savings-plan-backup-"+new Date().toISOString().slice(0,10)+".json"; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },500); toast("Backup downloaded"); return; }
+  if(t.dataset.act==="pull"){ toast("Checking for changes…"); pullNow().then(function(){ toast("Up to date"); },function(){ toast("Couldn’t reach sync right now"); }); return; }
+  if(t.dataset.act==="ghconnect"){ var tv=(document.getElementById("ghtok").value||"").trim(); if(!tv){ toast("Paste your GitHub token first"); return; } try{ localStorage.setItem("savingsPlan.gh",tv); localStorage.removeItem("savingsPlan.gid"); }catch(x){} t.textContent="Connecting…"; ghStart().then(function(){ if(!SY.err) toast("GitHub sync is on"); }); return; }
+  if(t.dataset.act==="ghoff"){ try{ localStorage.removeItem("savingsPlan.gh"); localStorage.removeItem("savingsPlan.gid"); }catch(x){} SY.mode="device"; SY.err=""; paintSaved(); soft(); toast("GitHub sync turned off"); return; }
   if(t.dataset.act==="import"){ document.getElementById("fileImport").click(); return; }
   if(t.dataset.act==="reset"){ ask("Reset everything back to the original plan and delete all entries, including Savvy Tech payments?", function(){ state=Savvy.ensure(syncFx(defaultState())); save("Reset done"); soft(); }); return; }
 });
@@ -1377,7 +1450,7 @@ document.addEventListener("change",function(ev){
 document.addEventListener("keydown",function(ev){ if(ev.key==="Enter" && ev.target.matches("input.amt, input.inp") && !ev.target.closest(".scrim")) ev.target.blur(); });
 window.addEventListener("resize",function(){ var on=document.querySelector(".nav button.on"), pill=document.getElementById("pill"); if(on&&pill){ pill.style.left=on.offsetLeft+"px"; pill.style.width=on.offsetWidth+"px"; } });
 
-if(state.savedAt) document.getElementById("saved").innerHTML='<i></i><span>Saved '+new Date(state.savedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})+'</span>';
+paintSaved();
 if(typeof Chart==="undefined"){ document.getElementById("view").innerHTML='<div class="glass">Charts could not load. Make sure the <b>vendor</b> folder is uploaded next to this page.</div>'; return; }
 Chart.defaults.font.family="Inter";
 render();
