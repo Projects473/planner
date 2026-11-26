@@ -214,6 +214,7 @@ canvas#confetti{position:fixed;inset:0;pointer-events:none;z-index:90}
   .big{font-size:28px}
   .item{grid-template-columns:auto 1fr auto;}
   .item .pillst{display:none}
+  .item.xit{grid-template-columns:auto 1fr auto auto;gap:10px}
   .amt{width:96px}
   .c3{grid-column:span 6}
   .hstats{grid-template-columns:1fr 1fr}
@@ -975,8 +976,11 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){retu
 function money(n, dp){ if(n==null||isNaN(n)) return "–"; var neg=n<0; n=Math.abs(n); var s=n.toLocaleString("en-US",{minimumFractionDigits:dp?2:0,maximumFractionDigits:2}); return (neg?"−":"")+"EC$"+s; }
 function plain(n){ if(n==null||isNaN(n)) return "–"; return (Math.round(n*100)/100).toLocaleString("en-US"); }
 function signed(n){ if(!n) return "0"; return (n>0?"+":"−")+Math.abs(Math.round(n*100)/100).toLocaleString("en-US"); }
-function monthObj(k){ if(!state.months[k]) state.months[k]={income:null, actual:{}, paid:{}, notes:"", internPaid:false}; return state.months[k]; }
-function peek(k){ return state.months[k] || {income:null, actual:{}, paid:{}, notes:"", internPaid:false}; }
+function monthObj(k){ if(!state.months[k]) state.months[k]={income:null, actual:{}, paid:{}, notes:"", internPaid:false, extras:[]}; if(!state.months[k].extras) state.months[k].extras=[]; return state.months[k]; }
+/* one-off items added to a single month */
+function extrasOf(k){ return peek(k).extras||[]; }
+function extraSum(k, paidOnly){ return extrasOf(k).reduce(function(a,x){ return a+((!paidOnly||x.paid)?(+x.amount||0):0); },0); }
+function peek(k){ return state.months[k] || {income:null, actual:{}, paid:{}, notes:"", internPaid:false, extras:[]}; }
 function line(id){ return state.plan.lines.filter(function(l){return l.id===id;})[0]; }
 function idxOf(k){ for(var i=0;i<MONTHS.length;i++) if(MONTHS[i].key===k) return i; return -1; }
 function timing(k){ var t=todayKey(); return k<t?"past":(k===t?"current":"future"); }
@@ -988,13 +992,13 @@ function internDueMonths(){ return MONTHS.filter(function(m,i){return isInternMo
 function spendLines(){ return state.plan.lines.filter(function(l){return l.kind!=="savings" && l.kind!=="reserve";}); }
 /* actual for a line: entered amount, or the budget if ticked paid with no amount */
 function actualOf(k,l){ var m=peek(k); var v=m.actual[l.id]; if(v!=null && v!=="") return +v; if(m.paid[l.id]) return bud(l,k); return null; }
-function hasData(k){ var m=peek(k); return Object.keys(m.actual).some(function(x){return m.actual[x]!=null&&m.actual[x]!=="";}) || Object.keys(m.paid).some(function(x){return m.paid[x];}) || m.income!=null; }
+function hasData(k){ var m=peek(k); return Object.keys(m.actual).some(function(x){return m.actual[x]!=null&&m.actual[x]!=="";}) || Object.keys(m.paid).some(function(x){return m.paid[x];}) || m.income!=null || (m.extras&&m.extras.length>0); }
 function sumKind(k,kind){ var l=state.plan.lines.filter(function(x){return x.kind===kind;})[0]; if(!l) return 0; return actualOf(k,l)||0; }
 function planKind(kind){ var l=state.plan.lines.filter(function(x){return x.kind===kind;})[0]; return l?+l.budget:0; }
-function monthSpend(k){ var a=0,b=0,any=false; spendLines().forEach(function(l){ var v=actualOf(k,l); b+=bud(l,k); if(v!=null){a+=v; any=true;} }); return {actual:a, budget:b, any:any}; }
+function monthSpend(k){ var a=0,b=0,any=false; spendLines().forEach(function(l){ var v=actualOf(k,l); b+=bud(l,k); if(v!=null){a+=v; any=true;} }); extrasOf(k).forEach(function(x){ b+=+x.amount||0; if(x.paid){ a+=+x.amount||0; any=true; } }); return {actual:a, budget:b, any:any}; }
 function cumThrough(i, kind){ var s=0; for(var j=0;j<=i;j++) s+=sumKind(MONTHS[j].key,kind); return s; }
 function cumTarget(i, kind){ return planKind(kind)*(i+1); }
-function billsStatus(k){ var bills=state.plan.lines.filter(function(l){return l.bill && bud(l,k)>0;}); var m=peek(k); var paid=bills.filter(function(l){return m.paid[l.id] || (m.actual[l.id]!=null && m.actual[l.id]!=="");}).length; return {paid:paid, total:bills.length}; }
+function billsStatus(k){ var bills=state.plan.lines.filter(function(l){return l.bill && bud(l,k)>0;}); var m=peek(k); var paid=bills.filter(function(l){return m.paid[l.id] || (m.actual[l.id]!=null && m.actual[l.id]!=="");}).length; var ex=extrasOf(k); return {paid:paid+ex.filter(function(x){return x.paid;}).length, total:bills.length+ex.length}; }
 function internPaidTo(i){ var n=0,due=0; for(var j=0;j<=i;j++){ if(isInternMonth(j)){ due++; if(actualOf(MONTHS[j].key,line("intern"))!=null) n++; } } return {paid:n,due:due}; }
 function ratioStatus(actual, target, higherIsBetter){
   if(target<=0) return "on";
@@ -1218,7 +1222,7 @@ function viewHome(){
     '<section class="glass c4"><h2>Where the money goes</h2><div class="sub">'+MONTHS[i].label+' plan · hover a slice</div><div class="donut"><canvas id="donut"></canvas><div class="ctr"><div><small id="dLbl">Monthly income</small><b id="dVal">'+money(state.plan.income)+'</b><small id="dPct">&nbsp;</small></div></div></div><div class="leg" id="dLeg"></div></section>'+
   '</div>';
 }
-function monthOut(k){ var s=0; state.plan.lines.forEach(function(l){ s+=actualOf(k,l)||0; }); return s; }
+function monthOut(k){ var s=0; state.plan.lines.forEach(function(l){ s+=actualOf(k,l)||0; }); return s+extraSum(k,true); }
 function initHome(){
   var ring=document.getElementById("ringVal"); if(ring) requestAnimationFrame(function(){ requestAnimationFrame(function(){ ring.style.strokeDashoffset=ring.dataset.target; }); });
   var d=seriesData(), s=ui.series, col={total:"#22c55e",savings:"#22c55e",reserve:"#60a5fa",savvy:"#a78bfa"}[s];
@@ -1271,9 +1275,52 @@ function viewMonth(){
     '<section class="glass c12"><div class="between"><div><h2>'+MONTHS[i].label+' checklist</h2><div class="sub">Flip the switch when paid. Type an amount only if it was different.</div></div>'+
       '<div class="row" style="flex-wrap:wrap"><button class="btn sm pri" id="payAll">'+ICONS.check+'Tick all bills</button><button class="btn sm" id="clearMonth">Clear month</button></div></div>'+
       (isInternMonth(i)?'<div class="banner '+(actualOf(k,line("intern"))!=null?"ok":"warn")+'"><b>Intern payment '+money(state.plan.internQuarterly)+'</b> is due by the end of '+MONTHS[i].short+'.</div>':'<div class="banner info">No intern payment this month'+(nextI?'. Next one: end of '+nextI.label+'.':'.')+'</div>')+
-      groups+
+      groups+extrasHtml(k)+
       '<div class="grp"><h3><span>Notes</span></h3><textarea id="monthNotes" class="inp" rows="3" placeholder="Anything unexpected this month?">'+esc(m.notes||"")+'</textarea></div>'+
     '</section></div>';
+}
+
+function extrasHtml(k){
+  var ex=extrasOf(k), tot=extraSum(k,false), pd=extraSum(k,true);
+  var rows=ex.map(function(x){
+    return '<div class="item xit '+(x.paid?"done":"")+'"><button class="tog '+(x.paid?"on":"")+'" data-xpaid="'+x.id+'" aria-label="Mark '+esc(x.name)+' paid" aria-pressed="'+(x.paid?"true":"false")+'"></button>'+
+      '<div class="nm">'+esc(x.name)+'<small>Extra this month only'+(x.note?' · '+esc(x.note):'')+'</small></div>'+
+      '<button class="btn sm" data-xedit="'+x.id+'" aria-label="Edit '+esc(x.name)+'">Edit</button>'+
+      '<input class="amt num" inputmode="decimal" data-xamt="'+x.id+'" value="'+plain(+x.amount||0)+'" aria-label="Amount for '+esc(x.name)+'"></div>';
+  }).join("");
+  return '<div class="grp"><h3><span>Extra items</span><span class="num">'+money(pd,true)+' / '+money(tot,true)+'</span></h3>'+
+    (rows||'<div class="sub" style="padding:6px 2px 10px">Anything not in your plan this month, like a repair, gift or one-off bill.</div>')+
+    '<button class="btn sm" data-xadd="1" style="margin-top:8px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add item</button></div>';
+}
+function extraSheet(x){
+  var isNew=!x, e=x||{}, k=ui.month;
+  var s=document.createElement("div"); s.className="scrim";
+  s.innerHTML='<div class="sheet" role="dialog" aria-modal="true" aria-label="'+(isNew?"Add an item":"Edit item")+'"><div class="grab"></div>'+
+    '<div class="between"><div><h2 style="font-size:20px">'+(isNew?"Add an item to "+MONTHS[idxOf(k)].label:"Edit item")+'</h2><div class="sub">Counts toward this month only. Your plan stays the same.</div></div><button class="iconbtn" data-close="1" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>'+
+    '<div class="fgrid">'+
+      '<label class="full">Amount (EC$)<input class="inp num" id="xAmt" inputmode="decimal" placeholder="0.00" value="'+(e.amount!=null?e.amount:"")+'" style="font-size:24px;font-family:var(--disp);font-weight:700;padding:14px"></label>'+
+      '<label class="full">What is it?<input class="inp" id="xName" placeholder="e.g. Car repair" value="'+esc(e.name||"")+'"></label>'+
+      '<label class="full">Note (optional)<input class="inp" id="xNote" placeholder="e.g. Paid from personal allowance" value="'+esc(e.note||"")+'"></label>'+
+      '<label class="full" style="flex-direction:row;align-items:center;gap:10px;display:flex"><input type="checkbox" id="xPaid" '+(e.paid||isNew?"checked":"")+' style="width:18px;height:18px"> Already paid</label>'+
+    '</div>'+
+    '<div class="row" style="margin-top:20px">'+(isNew?"":'<button class="btn danger" data-delete="1">Delete</button>')+'<span class="sp"></span><button class="btn" data-close="1">Cancel</button><button class="btn pri" data-savex="1">'+(isNew?"Add item":"Save")+'</button></div></div>';
+  document.body.appendChild(s); requestAnimationFrame(function(){ s.classList.add("show"); });
+  setTimeout(function(){ var a=document.getElementById("xAmt"); if(a&&isNew) a.focus(); },300);
+  var close=function(){ s.classList.remove("show"); setTimeout(function(){ s.remove(); },300); };
+  s.addEventListener("keydown",function(ev){ if(ev.key==="Escape") close(); });
+  s.addEventListener("click",function(ev){
+    if(ev.target===s || ev.target.closest("[data-close]")){ close(); return; }
+    if(ev.target.closest("[data-delete]")){ ask("Delete "+(e.name||"this item")+" ("+money(+e.amount||0,true)+") from "+MONTHS[idxOf(k)].label+"?", function(){ var m=monthObj(k); m.extras=m.extras.filter(function(y){return y.id!==e.id;}); save("Item deleted"); close(); soft(); }); return; }
+    if(ev.target.closest("[data-savex]")){
+      var amt=parseAmt(document.getElementById("xAmt").value), nm=document.getElementById("xName").value.trim();
+      if(amt==null||amt<0){ toast("Enter the amount"); return; }
+      if(!nm){ toast("Give the item a name"); return; }
+      var nt=document.getElementById("xNote").value.trim(), pd=document.getElementById("xPaid").checked, m=monthObj(k);
+      if(isNew) m.extras.push({id:"x"+Date.now().toString(36)+Math.random().toString(36).slice(2,6), name:nm, amount:amt, note:nt, paid:pd});
+      else { var t=m.extras.filter(function(y){return y.id===e.id;})[0]; if(t){ t.name=nm; t.amount=amt; t.note=nt; t.paid=pd; } }
+      save(isNew?"Added "+nm+" · "+money(amt,true):"Item updated"); close(); soft();
+    }
+  });
 }
 
 function viewSavvy(){
@@ -1411,15 +1458,18 @@ function ask(msg, ok){
 /* ================= events ================= */
 function parseAmt(v){ v=String(v).replace(/[^0-9.\-]/g,""); if(v===""||v==="-"||v===".") return null; var n=parseFloat(v); return isNaN(n)?null:Math.round(n*100)/100; }
 document.addEventListener("click",function(ev){
-  var t=ev.target.closest("[data-view],[data-step],[data-goto],[data-goto2],[data-series],[data-paid],[data-svscope],[data-svpdf],[data-edit],[data-add],[data-act],#fab,#themeBtn,#payAll,#clearMonth");
+  var t=ev.target.closest("[data-view],[data-step],[data-goto],[data-goto2],[data-series],[data-paid],[data-svscope],[data-svpdf],[data-edit],[data-add],[data-act],[data-xadd],[data-xedit],[data-xpaid],#fab,#themeBtn,#payAll,#clearMonth");
   if(!t || t.closest(".scrim")) return;
+  if(t.dataset.xadd){ extraSheet(null); return; }
+  if(t.dataset.xedit){ var xe=extrasOf(ui.month).filter(function(y){return y.id===t.dataset.xedit;})[0]; if(xe) extraSheet(xe); return; }
+  if(t.dataset.xpaid){ var xm=monthObj(ui.month), xw=billsStatus(ui.month), xi=xm.extras.filter(function(y){return y.id===t.dataset.xpaid;})[0]; if(xi){ xi.paid=!xi.paid; save(); var xn=billsStatus(ui.month); soft(); if(xn.paid===xn.total && xw.paid<xw.total){ confetti(); toast("All bills paid for "+MONTHS[idxOf(ui.month)].short+" 🎉"); } } return; }
   if(t.dataset.view){ go(t.dataset.view); return; }
   if(t.dataset.step){ var i=idxOf(ui.month)+(+t.dataset.step); if(i>=0&&i<12){ ui.month=MONTHS[i].key; soft(); } return; }
   if(t.dataset.goto){ ui.month=t.dataset.goto; soft(); return; }
   if(t.dataset.goto2){ ui.month=t.dataset.goto2; ui.svScope="month"; soft(); return; }
   if(t.dataset.series){ ui.series=t.dataset.series; ui.animate=true; killCharts(); initHome(); ui.animate=false; document.querySelectorAll("[data-series]").forEach(function(b){ b.classList.toggle("on", b.dataset.series===ui.series); }); return; }
   if(t.dataset.paid){ var m=monthObj(ui.month), was=billsStatus(ui.month); m.paid[t.dataset.paid]=!m.paid[t.dataset.paid]; save(); var now=billsStatus(ui.month); soft(); if(now.paid===now.total && was.paid<was.total){ confetti(); toast("All bills paid for "+MONTHS[idxOf(ui.month)].short+" 🎉"); } return; }
-  if(t.id==="payAll"){ var mm=monthObj(ui.month), w=billsStatus(ui.month); state.plan.lines.forEach(function(l){ if(l.bill && bud(l,ui.month)>0) mm.paid[l.id]=true; }); save("All bills ticked"); soft(); if(w.paid<w.total) confetti(); return; }
+  if(t.id==="payAll"){ var mm=monthObj(ui.month), w=billsStatus(ui.month); state.plan.lines.forEach(function(l){ if(l.bill && bud(l,ui.month)>0) mm.paid[l.id]=true; }); mm.extras.forEach(function(x){ x.paid=true; }); save("All bills ticked"); soft(); if(w.paid<w.total) confetti(); return; }
   if(t.id==="clearMonth"){ ask("Clear every entry for "+MONTHS[idxOf(ui.month)].label+"?", function(){ delete state.months[ui.month]; save("Month cleared"); soft(); }); return; }
   if(t.dataset.svscope){ ui.svScope=t.dataset.svscope; soft(); return; }
   if(t.dataset.svpdf){ try{ var n=Savvy.exportPdf(state,{mode:t.dataset.svpdf, month:ui.month, months:MONTHS}); toast("Downloaded "+n); }catch(err){ toast("Could not make the PDF: "+err.message); } return; }
@@ -1440,6 +1490,7 @@ document.addEventListener("change",function(ev){
   if(t.dataset.actual){ m=monthObj(ui.month); var v=parseAmt(t.value); if(v==null) delete m.actual[t.dataset.actual]; else m.actual[t.dataset.actual]=v; save(); soft(); return; }
   if(t.id==="incomeIn"){ m=monthObj(ui.month); m.income=parseAmt(t.value); save(); soft(); return; }
   if(t.id==="monthNotes"){ monthObj(ui.month).notes=t.value; save("Notes saved"); return; }
+  if(t.dataset.xamt){ var xa=parseAmt(t.value), xo=monthObj(ui.month).extras.filter(function(y){return y.id===t.dataset.xamt;})[0]; if(xo&&xa!=null&&xa>=0){ xo.amount=xa; save(); } soft(); return; }
   if(t.dataset.lbudget){ var b=parseAmt(t.value); if(b!=null&&b>=0){ line(t.dataset.lbudget).budget=b; save(); } soft(); return; }
   if(t.dataset.lfx){ var f=parseAmt(t.value); if(f!=null&&f>=0){ line(t.dataset.lfx).fx.amt=f; syncFx(state); save(); } soft(); return; }
   if(t.dataset.rate){ var r=parseAmt(t.value); if(r!=null&&r>0){ state.plan.rates[t.dataset.rate]=r; syncFx(state); save(); } soft(); return; }
