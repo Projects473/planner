@@ -1025,7 +1025,7 @@ var THEME_KEY="savingsPlan.theme";
 try{ var th=localStorage.getItem(THEME_KEY); if(th) document.documentElement.setAttribute("data-theme",th); }catch(e){}
 readHash();
 
-function readHash(){ var m=/^(home|month|savvy|plan)(?:-(\d{4}-\d{2}))?$/.exec((location.hash||"").slice(1)); if(m){ ui.view=m[1]; if(m[2]&&idxOf(m[2])>=0) ui.month=m[2]; } }
+function readHash(){ var m=/^(home|month|left|savvy|plan)(?:-(\d{4}-\d{2}))?$/.exec((location.hash||"").slice(1)); if(m){ ui.view=m[1]; if(m[2]&&idxOf(m[2])>=0) ui.month=m[2]; } }
 function writeHash(){ var h="#"+ui.view+"-"+ui.month; if(location.hash!==h) history.replaceState(null,"",h); }
 window.addEventListener("hashchange", function(){ readHash(); ui.animate=true; render(); });
 /* keep in step with the classic view if it is open in another tab */
@@ -1116,6 +1116,7 @@ var ICONS={
   home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>',
   month:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M8 2v4M16 2v4M3 10h18M8 15l2.5 2.5L16 13"/></svg>',
   savvy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="3"/><path d="M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2M3 13h18"/></svg>',
+  left:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   plan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="17" cy="18" r="2.5"/></svg>',
   sun:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   moon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>',
@@ -1126,7 +1127,7 @@ var ICONS={
   cart:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.6 12.4a2 2 0 002 1.6h8.8a2 2 0 002-1.6L22 7H6"/></svg>',
   inbox:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 01-2 2H4a2 2 0 01-2-2v-6z"/></svg>'
 };
-var VIEWS=[{id:"home",name:"Home"},{id:"month",name:"Month"},{id:"savvy",name:"Savvy Tech"},{id:"plan",name:"Plan"}];
+var VIEWS=[{id:"home",name:"Home"},{id:"month",name:"Month"},{id:"left",name:"Remaining"},{id:"savvy",name:"Savvy Tech"},{id:"plan",name:"Plan"}];
 
 /* ----- count-up ----- */
 function countUps(){
@@ -1280,6 +1281,44 @@ function viewMonth(){
     '</section></div>';
 }
 
+/* ----- Remaining: cash not yet ticked off ----- */
+function isTicked(k,l){ var m=peek(k); return !!m.paid[l.id] || (m.actual[l.id]!=null && m.actual[l.id]!==""); }
+function remainingOf(k){
+  var items=[];
+  state.plan.lines.forEach(function(l){ var b=bud(l,k); if(b>0 && !isTicked(k,l)) items.push({l:l, amt:b}); });
+  var ex=extrasOf(k).filter(function(x){ return !x.paid && (+x.amount||0)>0; });
+  var tot=items.reduce(function(a,x){return a+x.amt;},0)+ex.reduce(function(a,x){return a+(+x.amount||0);},0);
+  var bills=items.filter(function(x){return x.l.bill;}).reduce(function(a,x){return a+x.amt;},0)+ex.reduce(function(a,x){return a+(+x.amount||0);},0);
+  var sav=items.filter(function(x){return x.l.kind==="savings"||x.l.kind==="reserve";}).reduce(function(a,x){return a+x.amt;},0);
+  return {items:items, extras:ex, total:Math.round(tot*100)/100, bills:Math.round(bills*100)/100, save:Math.round(sav*100)/100, other:Math.round((tot-bills-sav)*100)/100, count:items.length+ex.length};
+}
+function viewLeft(){
+  var k=ui.month, i=idxOf(k), m=peek(k), r=remainingOf(k);
+  var income=m.income!=null?+m.income:state.plan.income, out=monthOut(k), after=income-out-r.total;
+  var groups=GROUPS.map(function(g){
+    var ls=r.items.filter(function(x){return x.l.group===g.id;}); if(!ls.length) return "";
+    var gt=ls.reduce(function(a,x){return a+x.amt;},0);
+    return '<div class="grp"><h3><span>'+esc(g.name)+'</span><span class="num">'+money(gt,true)+'</span></h3>'+ls.map(function(x){ var l=x.l;
+      var sub=(l.fx?(CUR_SYM[l.fx.cur]||l.fx.cur)+l.fx.amt+" · ":"")+(l.kind==="savings"?"Transfer to savings":l.kind==="reserve"?"Transfer to reserve":l.auto?"Whatever is left":l.bill?"Bill":"Spending");
+      return '<div class="item" style="grid-template-columns:auto 1fr auto"><button class="tog" data-paid="'+l.id+'" aria-label="Tick off '+esc(l.name)+'" aria-pressed="false"></button><div class="nm">'+esc(l.name)+'<small>'+sub+'</small></div><b class="num">'+money(x.amt,true)+'</b></div>';
+    }).join("")+'</div>';
+  }).join("");
+  if(r.extras.length) groups+='<div class="grp"><h3><span>Extra items</span><span class="num">'+money(r.extras.reduce(function(a,x){return a+(+x.amount||0);},0),true)+'</span></h3>'+r.extras.map(function(x){
+    return '<div class="item" style="grid-template-columns:auto 1fr auto"><button class="tog" data-xpaid="'+x.id+'" aria-label="Tick off '+esc(x.name)+'" aria-pressed="false"></button><div class="nm">'+esc(x.name)+'<small>Extra this month only'+(x.note?' · '+esc(x.note):'')+'</small></div><b class="num">'+money(+x.amount||0,true)+'</b></div>'; }).join("")+'</div>';
+  if(!r.count) groups='<div class="empty">'+ICONS.check+'Everything is ticked off for '+MONTHS[i].label+'.<br>Nothing left to pay or move.</div>';
+  var yr=0;
+  var rows=MONTHS.map(function(mm){ var x=remainingOf(mm.key), t=timing(mm.key); yr+=x.total;
+    return '<tr class="click '+(mm.key===k?"sel":"")+'" data-goto="'+mm.key+'" style="'+(t==="future"?"opacity:.55":"")+'"><td><b>'+mm.label+'</b></td><td class="r num">'+(x.count||"–")+'</td><td class="r num">'+(x.total?money(x.total,true):"–")+'</td><td>'+(x.count?(t==="past"?'<span class="chip st-off"><i></i>Overdue</span>':t==="current"?'<span class="chip st-prog"><i></i>This month</span>':'<span class="chip st-up"><i></i>Upcoming</span>'):'<span class="chip st-on"><i></i>All ticked</span>')+'</td></tr>'; }).join("");
+  return '<div class="grid">'+
+    '<section class="glass c3 tile hov"><div class="lbl">Still to go out <span class="ico">'+ICONS.left+'</span></div><div class="mid">'+cnt(r.total)+'</div><div class="foot">'+r.count+' item'+(r.count===1?"":"s")+' not ticked off</div></section>'+
+    '<section class="glass c3 tile hov"><div class="lbl">Bills left <span class="ico">'+ICONS.check+'</span></div><div class="mid">'+cnt(r.bills)+'</div><div class="foot">Fixed bills and extras</div></section>'+
+    '<section class="glass c3 tile hov"><div class="lbl">Savings to move <span class="ico">'+ICONS.shield+'</span></div><div class="mid">'+cnt(r.save)+'</div><div class="foot">Spending left '+money(r.other,true)+'</div></section>'+
+    '<section class="glass c3 tile hov"><div class="lbl">Cash after all of it <span class="ico">'+ICONS.wallet+'</span></div><div class="mid '+(after<0?"neg":"")+'">'+cnt(after)+'</div><div class="foot">Income '+money(income)+' − paid '+money(out,true)+'</div></section>'+
+    '<section class="glass c8"><div class="between"><div><h2>Remaining in '+MONTHS[i].label+'</h2><div class="sub">Everything in the checklist not ticked off yet. Flip a switch when it is paid or moved.</div></div>'+(r.count?'<button class="btn sm" data-view="month">Open checklist</button>':'')+'</div>'+groups+'</section>'+
+    '<section class="glass c4"><h2>By month</h2><div class="sub">Tap a month to see what is left</div><div class="scroll" style="margin-top:10px"><table><thead><tr><th>Month</th><th class="r">Items</th><th class="r">Left</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></section>'+
+  '</div>';
+}
+
 function extrasHtml(k){
   var ex=extrasOf(k), tot=extraSum(k,false), pd=extraSum(k,true);
   var rows=ex.map(function(x){
@@ -1402,7 +1441,7 @@ function renderChrome(){
 function render(){
   killCharts(); renderChrome();
   var v=document.getElementById("view"), y=window.scrollY;
-  v.innerHTML = ui.view==="month"?viewMonth():ui.view==="savvy"?viewSavvy():ui.view==="plan"?viewPlan():viewHome();
+  v.innerHTML = ui.view==="month"?viewMonth():ui.view==="left"?viewLeft():ui.view==="savvy"?viewSavvy():ui.view==="plan"?viewPlan():viewHome();
   if(!ui.animate){ v.querySelectorAll(".glass").forEach(function(g){ g.style.animation="none"; }); window.scrollTo(0,y); }
   if(ui.view==="home") initHome(); if(ui.view==="savvy") initSavvy();
   countUps(); writeHash(); ui.animate=false;
